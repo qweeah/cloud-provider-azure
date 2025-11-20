@@ -94,7 +94,7 @@ func Test_runPlugin(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Unexpected error when writing to temp file: %v", err)
 			}
-			p := NewCredentialProvider(configFile.Name(), "mcr.microsoft.com:fakeacrname.azurecr.io")
+			p := NewCredentialProvider(configFile.Name(), "mcr.microsoft.com:fakeacrname.azurecr.io", "")
 			p.plugin = &fakePlugin{}
 			out := &bytes.Buffer{}
 

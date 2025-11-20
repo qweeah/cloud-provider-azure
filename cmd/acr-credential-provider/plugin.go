@@ -46,15 +46,17 @@ func init() {
 type ExecPlugin struct {
 	configFile        string
 	RegistryMirrorStr string
+	SNIName           string
 	plugin            credentialprovider.CredentialProvider
 }
 
 // NewCredentialProvider returns an instance of execPlugin that fetches
 // credentials based on the provided plugin implementing the CredentialProvider interface.
-func NewCredentialProvider(configFile string, registryMirrorStr string) *ExecPlugin {
+func NewCredentialProvider(configFile string, registryMirrorStr string, sniName string) *ExecPlugin {
 	return &ExecPlugin{
 		configFile:        configFile,
 		RegistryMirrorStr: registryMirrorStr,
+		SNIName:           sniName,
 	}
 }
 
@@ -92,7 +94,7 @@ func (e *ExecPlugin) runPlugin(ctx context.Context, r io.Reader, w io.Writer, ar
 
 	if e.plugin == nil {
 		// acr provider plugin are decided at runtime by the request information.
-		e.plugin, err = credentialprovider.NewAcrProvider(request, e.RegistryMirrorStr, e.configFile)
+		e.plugin, err = credentialprovider.NewAcrProvider(request, e.RegistryMirrorStr, e.configFile, e.SNIName)
 		if err != nil {
 			return err
 		}
