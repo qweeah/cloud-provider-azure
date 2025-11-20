@@ -38,6 +38,7 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	var RegistryMirrorStr string
+	var SNIName string
 
 	command := &cobra.Command{
 		Use:   "acr-credential-provider configFile",
@@ -54,7 +55,7 @@ func main() {
 		},
 		Version: version.Get().GitVersion,
 		RunE: func(_ *cobra.Command, args []string) error {
-			if err := NewCredentialProvider(args[0], RegistryMirrorStr).Run(context.TODO()); err != nil {
+			if err := NewCredentialProvider(args[0], RegistryMirrorStr, SNIName).Run(context.TODO()); err != nil {
 				klog.Errorf("Error running acr credential provider: %v", err)
 				return err
 			}
@@ -68,6 +69,8 @@ func main() {
 	// Flags
 	command.Flags().StringVarP(&RegistryMirrorStr, "registry-mirror", "r", "",
 		"Mirror a source registry host to a target registry host, and image pull credential will be requested to the target registry host when the image is from source registry host")
+	command.Flags().StringVarP(&SNIName, "sni-name", "s", "",
+		"SNI name for identity bindings token exchange endpoint")
 
 	logs.AddFlags(command.Flags())
 	if err := func() error {
