@@ -88,13 +88,6 @@ func NewAcrProvider(req *v1.CredentialProviderRequest, registryMirrorStr string,
 		if err != nil {
 			return nil, fmt.Errorf("failed to get identity bindings token credential for image %s: %w", req.Image, err)
 		}
-	} else if len(req.ServiceAccountToken) != 0 {
-		// Use service account token credential
-		klog.V(2).Infof("Using service account token credential for image %s", req.Image)
-		credential, err = getServiceAccountTokenCredential(req, config)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get service account token credential for image %s: %w", req.Image, err)
-		}
 	} else {
 		// Use managed identity
 		klog.V(2).Infof("Using managed identity to authenticate ACR for image %s", req.Image)
@@ -115,7 +108,6 @@ func NewAcrProvider(req *v1.CredentialProviderRequest, registryMirrorStr string,
 
 // getManagedIdentityCredential creates a new instance of the ACR provider.
 func getManagedIdentityCredential(_ *v1.CredentialProviderRequest, config *providerconfig.AzureClientConfig) (azcore.TokenCredential, error) {
-
 	var managedIdentityCredential azcore.TokenCredential
 
 	clientOption, _, err := azclient.GetAzCoreClientOption(&config.ARMClientConfig)
@@ -140,44 +132,6 @@ func getManagedIdentityCredential(_ *v1.CredentialProviderRequest, config *provi
 	}
 
 	return managedIdentityCredential, nil
-}
-
-func getServiceAccountTokenCredential(req *v1.CredentialProviderRequest, config *providerconfig.AzureClientConfig) (azcore.TokenCredential, error) {
-	if len(req.ServiceAccountToken) == 0 {
-		return nil, fmt.Errorf("kubernetes Service account token is not provided for image %s", req.Image)
-	}
-	klog.V(2).Infof("Kubernetes Service account token is provided for image %s", req.Image)
-
-	clientOption, _, err := azclient.GetAzCoreClientOption(&config.ARMClientConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get Azure client options for image %s: %w", req.Image, err)
-	}
-
-	// check required annotations
-	clientID, ok := req.ServiceAccountAnnotations[clientIDAnnotation]
-	if !ok || len(clientID) == 0 {
-		return nil, fmt.Errorf("client id annotation %s is not found or the value is empty", clientIDAnnotation)
-	}
-
-	// check required annotations
-	tenantID, ok := req.ServiceAccountAnnotations[tenantIDAnnotation]
-	if !ok || len(tenantID) == 0 {
-		return nil, fmt.Errorf("tenant id annotation %s is not found or the value is empty", tenantIDAnnotation)
-	}
-
-	// Create getAssertion callback that returns the service account token
-	getAssertion := func(_ context.Context) (string, error) {
-		return req.ServiceAccountToken, nil
-	}
-
-	clientAssertCredential, err := azidentity.NewClientAssertionCredential(tenantID, clientID, getAssertion, &azidentity.ClientAssertionCredentialOptions{
-		ClientOptions: *clientOption,
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize client assertion credential: %w", err)
-	}
-	return clientAssertCredential, nil
 }
 
 func (a *acrProvider) GetCredentials(ctx context.Context, image string, _ []string) (*v1.CredentialProviderResponse, error) {

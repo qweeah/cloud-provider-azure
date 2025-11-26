@@ -80,13 +80,13 @@ func main() {
 			return nil
 		},
 		Version: version.Get().GitVersion,
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			ksaAuthConfig, err := parseKSAAuthConfig(KSAAuthConfigMap)
 			if err != nil {
 				klog.Errorf("Error parsing KSA auth config: %v", err)
 				return err
 			}
-			if err := NewCredentialProvider(args[0], RegistryMirrorStr, *ksaAuthConfig).Run(context.TODO()); err != nil {
+			if err := NewCredentialProvider(args[0], RegistryMirrorStr, *ksaAuthConfig).Run(cmd.Context()); err != nil {
 				klog.Errorf("Error running acr credential provider: %v", err)
 				return err
 			}

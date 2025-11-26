@@ -19,7 +19,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -82,11 +81,7 @@ func Test_runPlugin(t *testing.T) {
 
 	for _, testcase := range testcases {
 		t.Run(testcase.name, func(t *testing.T) {
-			configFile, err := os.CreateTemp(".", "config.json")
-			if err != nil {
-				t.Fatalf("Unexpected error when creating temp file: %v", err)
-			}
-			defer os.Remove(configFile.Name())
+			p := NewCredentialProvider(&fakePlugin{})
 
 			_, err = configFile.WriteString(`
 			{
@@ -99,8 +94,7 @@ func Test_runPlugin(t *testing.T) {
 			p := NewCredentialProvider(configFile.Name(), "mcr.microsoft.com:fakeacrname.azurecr.io", credentialprovider.KSAAuthConfig{})
 			p.plugin = &fakePlugin{}
 			out := &bytes.Buffer{}
-
-			err = p.runPlugin(context.TODO(), testcase.in, out, []string{configFile.Name(), "--registry-mirror=mcr.microsoft.com:fakeacrname.azurecr.io"})
+			err := p.runPlugin(context.TODO(), testcase.in, out, nil)
 			if err != nil && !testcase.expectErr {
 				t.Fatal(err)
 			}
