@@ -31,14 +31,40 @@ import (
 	"k8s.io/component-base/logs"
 	"k8s.io/klog/v2"
 
+	"sigs.k8s.io/cloud-provider-azure/pkg/credentialprovider"
 	"sigs.k8s.io/cloud-provider-azure/pkg/version"
 )
+
+const (
+	flagKeySNIName         = "sni-name"
+	flagKeyDefaultClientID = "default-client-id"
+	flagKeyDefaultTenantID = "default-tenant-id"
+)
+
+func parseKSAAuthConfig(configMap map[string]string) (*credentialprovider.KSAAuthConfig, error) {
+	// Parse and validate KSA auth config
+	sniName := configMap[flagKeySNIName]
+	defaultClientID := configMap[flagKeyDefaultClientID]
+	defaultTenantID := configMap[flagKeyDefaultTenantID]
+
+	// Validate: if client ID or tenant ID is set, SNI name must also be set
+	if (defaultClientID != "" || defaultTenantID != "") && sniName == "" {
+		return nil, fmt.Errorf("--ksa-auth-config: --%s must be set when --%s or --%s is provided",
+			flagKeySNIName, flagKeyDefaultClientID, flagKeyDefaultTenantID)
+	}
+
+	return &credentialprovider.KSAAuthConfig{
+		SNIName:         sniName,
+		DefaultClientID: defaultClientID,
+		DefaultTenantID: defaultTenantID,
+	}, nil
+}
 
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	var RegistryMirrorStr string
-	var SNIName string
+	var KSAAuthConfigMap map[string]string
 
 	command := &cobra.Command{
 		Use:   "acr-credential-provider configFile",
@@ -55,7 +81,12 @@ func main() {
 		},
 		Version: version.Get().GitVersion,
 		RunE: func(_ *cobra.Command, args []string) error {
-			if err := NewCredentialProvider(args[0], RegistryMirrorStr, SNIName).Run(context.TODO()); err != nil {
+			ksaAuthConfig, err := parseKSAAuthConfig(KSAAuthConfigMap)
+			if err != nil {
+				klog.Errorf("Error parsing KSA auth config: %v", err)
+				return err
+			}
+			if err := NewCredentialProvider(args[0], RegistryMirrorStr, *ksaAuthConfig).Run(context.TODO()); err != nil {
 				klog.Errorf("Error running acr credential provider: %v", err)
 				return err
 			}
@@ -69,8 +100,8 @@ func main() {
 	// Flags
 	command.Flags().StringVarP(&RegistryMirrorStr, "registry-mirror", "r", "",
 		"Mirror a source registry host to a target registry host, and image pull credential will be requested to the target registry host when the image is from source registry host")
-	command.Flags().StringVarP(&SNIName, "sni-name", "s", "",
-		"SNI name for identity bindings token exchange endpoint")
+	command.Flags().StringToStringVar(&KSAAuthConfigMap, "ksa-auth-config", map[string]string{},
+		"KSA auth configuration as key=value pairs (sni-name=xxx,default-client-id=xxx,default-tenant-id=xxx)")
 
 	logs.AddFlags(command.Flags())
 	if err := func() error {

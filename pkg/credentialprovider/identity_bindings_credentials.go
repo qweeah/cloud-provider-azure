@@ -50,11 +50,11 @@ const (
 // identityBindingsTokenCredential implements azcore.TokenCredential interface
 // using identity bindings token exchange
 type identityBindingsTokenCredential struct {
-	req       *v1.CredentialProviderRequest
-	config    *providerconfig.AzureClientConfig
-	sniName   string
-	endpoint  string
-	transport *http.Transport
+	req           *v1.CredentialProviderRequest
+	config        *providerconfig.AzureClientConfig
+	ksaAuthConfig KSAAuthConfig
+	endpoint      string
+	transport     *http.Transport
 }
 
 // tokenResponse represents the response from identity bindings token exchange
@@ -134,7 +134,7 @@ func (c *identityBindingsTokenCredential) getTransport() (*http.Transport, error
 	}
 
 	// Create and cache transport
-	c.transport = createTransport(c.sniName, caPool)
+	c.transport = createTransport(c.ksaAuthConfig.SNIName, caPool)
 
 	return c.transport, nil
 }
@@ -155,17 +155,19 @@ func (c *identityBindingsTokenCredential) GetToken(ctx context.Context, opts pol
 		return azcore.AccessToken{}, fmt.Errorf("service account token not found in request")
 	}
 
-	// Get client ID - try workload identity annotation first, then fall back to ACR annotation
+	// Get client ID - try workload identity annotation first, then default
 	var clientID string
 	if id, ok := c.req.ServiceAccountAnnotations[workloadIdentityClientIDAnnotation]; ok {
 		clientID = id
-	} else if id, ok := c.req.ServiceAccountAnnotations[clientIDAnnotation]; ok {
-		clientID = id
+	} else {
+		clientID = c.ksaAuthConfig.DefaultClientID
 	}
 	if clientID == "" {
-		return azcore.AccessToken{}, fmt.Errorf("client ID not found in service account annotations (checked %s and %s)",
-			workloadIdentityClientIDAnnotation, clientIDAnnotation)
+		return azcore.AccessToken{}, fmt.Errorf("client ID not found in service account annotations (checked %s) and no default-client-id configured",
+			workloadIdentityClientIDAnnotation)
 	}
+
+	// TODO: tenant ID not used
 
 	// Prepare form data
 	formData := url.Values{}
@@ -224,30 +226,28 @@ func (c *identityBindingsTokenCredential) GetToken(ctx context.Context, opts pol
 	}, nil
 }
 
-func GetIdentityBindingsTokenCredential(req *v1.CredentialProviderRequest, config *providerconfig.AzureClientConfig, sniName string) (azcore.TokenCredential, error) {
+func GetIdentityBindingsTokenCredential(req *v1.CredentialProviderRequest, config *providerconfig.AzureClientConfig, ksaAuthConfig KSAAuthConfig) (azcore.TokenCredential, error) {
 	klog.V(2).Infof("Using identity bindings token credential for image %s", req.Image)
 
-	// Get endpoint from flag
-	endpoint := sniName
-	if endpoint == "" {
-		return nil, fmt.Errorf("SNI name not provided via flag")
+	// Get SNI name from config
+	sniName := ksaAuthConfig.SNIName
+	if sniName == "" {
+		return nil, fmt.Errorf("SNI name not provided in ksa-auth-config")
 	}
 
-	// Ensure endpoint is a valid URL
-	if !strings.HasPrefix(endpoint, "https://") {
-		endpoint = "https://" + endpoint
-	}
+	// Strip https:// prefix if present for TLS ServerName
+	sniName = strings.TrimPrefix(sniName, "https://")
 
-	// Use sniName for TLS configuration (strip https:// if present)
-	tlsSNIName := sniName
-	if strings.HasPrefix(tlsSNIName, "https://") {
-		tlsSNIName = strings.TrimPrefix(tlsSNIName, "https://")
-	}
+	// Build endpoint URL
+	endpoint := "https://" + sniName
+
+	// Update ksaAuthConfig with clean SNI name
+	ksaAuthConfig.SNIName = sniName
 
 	return &identityBindingsTokenCredential{
-		req:      req,
-		config:   config,
-		sniName:  tlsSNIName,
-		endpoint: endpoint,
+		req:           req,
+		config:        config,
+		ksaAuthConfig: ksaAuthConfig,
+		endpoint:      endpoint,
 	}, nil
 }

@@ -66,7 +66,7 @@ type acrProvider struct {
 	registryMirror map[string]string // Registry mirror relation: source registry -> target registry
 }
 
-func NewAcrProvider(req *v1.CredentialProviderRequest, registryMirrorStr string, configFile string, sniName string) (CredentialProvider, error) {
+func NewAcrProvider(req *v1.CredentialProviderRequest, registryMirrorStr string, configFile string, ksaAuthConfig KSAAuthConfig) (CredentialProvider, error) {
 	config, err := configloader.Load[providerconfig.AzureClientConfig](context.Background(), nil, &configloader.FileLoaderConfig{FilePath: configFile})
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
@@ -82,9 +82,9 @@ func NewAcrProvider(req *v1.CredentialProviderRequest, registryMirrorStr string,
 	}
 
 	var credential azcore.TokenCredential
-	if sniName != "" {
+	if ksaAuthConfig.SNIName != "" {
 		klog.V(2).Infof("Using identity bindings token credential for image %s", req.Image)
-		credential, err = GetIdentityBindingsTokenCredential(req, config, sniName)
+		credential, err = GetIdentityBindingsTokenCredential(req, config, ksaAuthConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get identity bindings token credential for image %s: %w", req.Image, err)
 		}

@@ -46,17 +46,17 @@ func init() {
 type ExecPlugin struct {
 	configFile        string
 	RegistryMirrorStr string
-	SNIName           string
+	KSAAuthConfig     credentialprovider.KSAAuthConfig
 	plugin            credentialprovider.CredentialProvider
 }
 
 // NewCredentialProvider returns an instance of execPlugin that fetches
 // credentials based on the provided plugin implementing the CredentialProvider interface.
-func NewCredentialProvider(configFile string, registryMirrorStr string, sniName string) *ExecPlugin {
+func NewCredentialProvider(configFile string, registryMirrorStr string, ksaAuthConfig credentialprovider.KSAAuthConfig) *ExecPlugin {
 	return &ExecPlugin{
 		configFile:        configFile,
 		RegistryMirrorStr: registryMirrorStr,
-		SNIName:           sniName,
+		KSAAuthConfig:     ksaAuthConfig,
 	}
 }
 
@@ -94,7 +94,7 @@ func (e *ExecPlugin) runPlugin(ctx context.Context, r io.Reader, w io.Writer, ar
 
 	if e.plugin == nil {
 		// acr provider plugin are decided at runtime by the request information.
-		e.plugin, err = credentialprovider.NewAcrProvider(request, e.RegistryMirrorStr, e.configFile, e.SNIName)
+		e.plugin, err = credentialprovider.NewAcrProvider(request, e.RegistryMirrorStr, e.configFile, e.KSAAuthConfig)
 		if err != nil {
 			return err
 		}
