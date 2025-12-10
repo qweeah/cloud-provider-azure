@@ -34,6 +34,11 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/golang-jwt/jwt/v5"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 	v1 "k8s.io/kubelet/pkg/apis/credentialprovider/v1"
 )
@@ -41,19 +46,45 @@ import (
 const (
 	// Kubernetes certificate path
 	KubernetesCACertPath = "/etc/kubernetes/certs/ca.crt"
+	// Kubelet kubeconfig path
+	KubeletKubeconfigPath = "/var/lib/kubelet/kubeconfig"
+	// ConfigMap name for identity binding mappings
+	IdentityBindingConfigMapName      = "acr-identity-binding-mappings"
+	IdentityBindingConfigMapNamespace = "kube-system"
 )
+
+// createKubeClient creates a Kubernetes client
+// It tries in-cluster config first, then falls back to kubelet's kubeconfig
+func createKubeClient() (kubernetes.Interface, error) {
+	// Try in-cluster config first
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		klog.V(4).Infof("In-cluster config not available, trying kubelet kubeconfig: %v", err)
+
+		// Fall back to kubelet's kubeconfig (for credential provider plugin running on nodes)
+		config, err = clientcmd.BuildConfigFromFlags("", KubeletKubeconfigPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load kubeconfig from %s: %w", KubeletKubeconfigPath, err)
+		}
+	}
+
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kubernetes clientset: %w", err)
+	}
+
+	return clientset, nil
+}
 
 // identityBindingsTokenCredential implements azcore.TokenCredential interface
 // using identity bindings token exchange
 type identityBindingsTokenCredential struct {
-	token    string
-	clientID string
-	// tenantID is reserved for future SDK compatibility and may be used in token endpoint construction.
-	tenantID  string
-	config    *providerconfig.AzureClientConfig
-	ibConfig  IdentityBindingsConfig
-	endpoint  string
-	transport *http.Transport
+	token       string
+	identityKey string
+	ibConfig    IdentityBindingsConfig
+	endpoint    string
+	transport   *http.Transport
+	kubeClient  kubernetes.Interface
 }
 
 // tokenResponse represents the response from identity bindings token exchange
@@ -143,24 +174,50 @@ func (c *identityBindingsTokenCredential) GetToken(ctx context.Context, opts pol
 
 	scope := opts.Scopes[0]
 
-	// Use stored client assertion token
-	clientAssertion := c.token
-	if clientAssertion == "" {
-		return azcore.AccessToken{}, fmt.Errorf("service account token not found")
+	// Step 1: Get identity key
+	identityKey := c.identityKey
+	if identityKey == "" {
+		return azcore.AccessToken{}, fmt.Errorf("identity key not found")
 	}
 
-	// Use stored client ID
-	clientID := c.clientID
+	klog.V(4).Infof("Identity bindings: using identity key %q", identityKey)
+
+	// Step 2: Get client ID from ConfigMap
+	configMap, err := c.kubeClient.CoreV1().ConfigMaps(IdentityBindingConfigMapNamespace).Get(ctx, IdentityBindingConfigMapName, metav1.GetOptions{})
+	if err != nil {
+		return azcore.AccessToken{}, fmt.Errorf("failed to get ConfigMap %s/%s: %w", IdentityBindingConfigMapNamespace, IdentityBindingConfigMapName, err)
+	}
+
+	// Parse the mappings JSON from ConfigMap
+	mappingsJSON, exists := configMap.Data["mappings"]
+	if !exists {
+		return azcore.AccessToken{}, fmt.Errorf("mappings key not found in ConfigMap %s/%s", IdentityBindingConfigMapNamespace, IdentityBindingConfigMapName)
+	}
+
+	// Parse the JSON mappings
+	var mappings map[string]string
+	if err := json.Unmarshal([]byte(mappingsJSON), &mappings); err != nil {
+		return azcore.AccessToken{}, fmt.Errorf("failed to parse mappings JSON from ConfigMap: %w", err)
+	}
+
+	// Lookup clientID for the identity key from mappings
+	clientID, exists := mappings[identityKey]
+	if !exists {
+		return azcore.AccessToken{}, fmt.Errorf("identity key %q not found in ConfigMap %s/%s mappings", identityKey, IdentityBindingConfigMapNamespace, IdentityBindingConfigMapName)
+	}
+
 	if clientID == "" {
-		return azcore.AccessToken{}, fmt.Errorf("client ID not configured")
+		return azcore.AccessToken{}, fmt.Errorf("client ID for identity key %q is empty in ConfigMap", identityKey)
 	}
 
-	// Prepare form data
+	klog.V(4).Infof("Identity bindings: resolved client ID %q for identity %q", clientID, identityKey)
+
+	// Step 3: Exchange token using saved SA token
 	formData := url.Values{}
 	formData.Set("grant_type", "client_credentials")
 	formData.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
 	formData.Set("scope", scope)
-	formData.Set("client_assertion", clientAssertion)
+	formData.Set("client_assertion", c.token) // Use saved SA token directly
 	formData.Set("client_id", clientID)
 
 	// Create request
@@ -193,7 +250,7 @@ func (c *identityBindingsTokenCredential) GetToken(ctx context.Context, opts pol
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return azcore.AccessToken{}, fmt.Errorf("token request failed with status %d", resp.StatusCode)
+		return azcore.AccessToken{}, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	// Parse response
@@ -233,35 +290,49 @@ func GetIdentityBindingsTokenCredential(req *v1.CredentialProviderRequest, confi
 		return nil, fmt.Errorf("service account token not found in request")
 	}
 
-	// Resolve client ID from annotation or use default
-	var clientID string
-	if id, ok := req.ServiceAccountAnnotations[clientIDAnnotation]; ok {
-		clientID = id
-	} else {
-		clientID = ibConfig.DefaultClientID
-	}
-	if clientID == "" {
-		return nil, fmt.Errorf("client ID not found in service account annotations (checked %s) and no default client ID configured",
-			clientIDAnnotation)
+	// Parse JWT to extract identity key from sub claim
+	parsedToken, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse service account token: %w", err)
 	}
 
-	// Resolve tenant ID from annotation or use default
-	var tenantID string
-	if id, ok := req.ServiceAccountAnnotations[tenantIDAnnotation]; ok {
-		tenantID = id
-	} else {
-		tenantID = ibConfig.DefaultTenantID
+	claims, ok := parsedToken.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, fmt.Errorf("failed to extract claims from service account token")
 	}
+
+	sub, err := claims.GetSubject()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get subject from token claims: %w", err)
+	}
+
+	// Extract identity key from subject (format: "system:serviceaccount:namespace:serviceaccount")
+	const subPrefix = "system:serviceaccount:"
+	if !strings.HasPrefix(sub, subPrefix) {
+		return nil, fmt.Errorf("invalid subject format in token, expected prefix %q, got %q", subPrefix, sub)
+	}
+
+	identityKey := strings.TrimPrefix(sub, subPrefix)
+	if identityKey == "" {
+		return nil, fmt.Errorf("identity key is empty after removing prefix from subject")
+	}
+
+	klog.V(4).Infof("Identity bindings: extracted identity key %q from service account token", identityKey)
 
 	// Build endpoint URL
 	endpoint := "https://" + sniName
 
+	// Initialize Kubernetes client
+	kubeClient, err := createKubeClient()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
+	}
+
 	return &identityBindingsTokenCredential{
-		token:    token,
-		clientID: clientID,
-		tenantID: tenantID,
-		config:   config,
-		ibConfig: ibConfig,
-		endpoint: endpoint,
+		token:       token,
+		identityKey: identityKey,
+		ibConfig:    ibConfig,
+		endpoint:    endpoint,
+		kubeClient:  kubeClient,
 	}, nil
 }
