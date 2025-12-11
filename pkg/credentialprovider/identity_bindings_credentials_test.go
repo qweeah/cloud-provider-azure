@@ -376,14 +376,6 @@ func TestIdentityBindingsTokenCredential_GetToken(t *testing.T) {
 			endpoint := fmt.Sprintf("https://api.example.com:%s", port)
 			transport := createTransport(tt.ibConfig.SNIName, tt.ibConfig.APIServerIP, caPool)
 
-			// Determine client ID from annotation or default
-			var clientID string
-			if id, ok := tt.req.ServiceAccountAnnotations[clientIDAnnotation]; ok {
-				clientID = id
-			} else {
-				clientID = tt.ibConfig.DefaultClientID
-			}
-
 			// Determine tenant ID from annotation or default
 			var tenantID string
 			if id, ok := tt.req.ServiceAccountAnnotations[tenantIDAnnotation]; ok {
@@ -394,7 +386,6 @@ func TestIdentityBindingsTokenCredential_GetToken(t *testing.T) {
 
 			cred := &identityBindingsTokenCredential{
 				token:     tt.req.ServiceAccountToken,
-				clientID:  clientID,
 				tenantID:  tenantID,
 				config:    &providerconfig.AzureClientConfig{},
 				ibConfig:  tt.ibConfig,
