@@ -43,6 +43,7 @@ const (
 	defaultCacheTTL = 5 * time.Minute
 
 	AcrAudience = "https://containerregistry.azure.net"
+	MCRHost     = "mcr.microsoft.com"
 )
 
 var (
@@ -89,10 +90,10 @@ func NewAcrProvider(req *v1.CredentialProviderRequest, registryMirrorStr string,
 		registryMirror: parseRegistryMirror(registryMirrorStr),
 	}
 
-	targetloginServer, _ := provider.parseACRLoginServerFromImage(req.Image)
-	isACR := (targetloginServer != "")
+	targetloginServer, sourceRegistry := provider.parseACRLoginServerFromImage(req.Image)
+	mcrMirroredToACR := (targetloginServer != "" && strings.EqualFold(sourceRegistry, MCRHost))
 	isNICluster := (len(registryMirrorStr) > 0)
-	shouldUseManagedIdentity := (isACR && isNICluster)
+	shouldUseManagedIdentity := (mcrMirroredToACR && isNICluster)
 
 	var credential azcore.TokenCredential
 	if !shouldUseManagedIdentity && ibConfig.SNIName != "" {
